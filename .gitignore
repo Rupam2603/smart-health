@@ -2,18 +2,18 @@
 .env
 .env.local
 .env.*.local
+frontend/.env
 
 # Dependencies
 node_modules/
-__pycache__/
+frontend/node_modules/
+backend/venv/
+backend/__pycache__/
 *.py[cod]
-*$py.class
-.venv/
-venv/
-ENV/
 
 # Production
 dist/
+frontend/dist/
 build/
 
 # Logs
