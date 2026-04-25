@@ -7,6 +7,7 @@ frontend/.env
 # Dependencies
 node_modules/
 frontend/node_modules/
+frontend/.vite/
 backend/venv/
 backend/__pycache__/
 *.py[cod]
