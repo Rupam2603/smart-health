@@ -102,6 +102,7 @@ async def predict_health(data: HealthData):
         "prediction_code": prediction,
         "prediction": report["prediction"],
         "summary": report["summary"],
+        "advice": " ".join(report["recommendations"]),
         "recommendations": report["recommendations"],
         "risk_score": report["risk_score"],
         "insights": insights if insights else ["All individual parameters are within manageable ranges."]
@@ -111,20 +112,66 @@ async def predict_health(data: HealthData):
 async def check_symptoms(data: SymptomData):
     text = data.text.lower()
     
-    # Simple NLP Triage Logic
-    triage = {
-        "fever": "You might have a common cold or infection. Rest and stay hydrated.",
-        "cough": "Possible respiratory irritation. If persistent, check for allergies or infections.",
-        "headache": "Commonly caused by stress or dehydration. Try resting in a dark room.",
-        "pain": "General pain noted. If acute or severe, seek medical attention.",
-        "default": "Your symptoms are noted. Please monitor closely and consult a healthcare provider if they worsen."
+    # Comprehensive Symptom Knowledge Base
+    symptom_db = {
+        "fever": {
+            "causes": "Viral infections (flu, cold), bacterial infections, or inflammatory conditions.",
+            "care": "Stay hydrated, rest, and use over-the-counter fever reducers if appropriate.",
+            "advice": "See a doctor if fever exceeds 103°F (39.4°C) or lasts more than 3 days."
+        },
+        "cough": {
+            "causes": "Respiratory tract infections, allergies, asthma, or environmental irritants.",
+            "care": "Use a humidifier, stay hydrated, and try honey (for adults) to soothe the throat.",
+            "advice": "Consult a physician if you experience shortness of breath or if the cough lasts > 3 weeks."
+        },
+        "headache": {
+            "causes": "Stress, dehydration, tension, or lack of sleep.",
+            "care": "Rest in a quiet, dark room, hydrate well, and practice stress-management techniques.",
+            "advice": "Seek immediate care for a 'thunderclap' headache or if accompanied by a stiff neck."
+        },
+        "chest pain": {
+            "causes": "Can range from muscle strain or heartburn to serious cardiac issues.",
+            "care": "Do not attempt home care for unexplained chest pain.",
+            "advice": "**EMERGENCY**: Seek immediate medical attention or call emergency services (108/911)."
+        },
+        "shortness of breath": {
+            "causes": "Asthma, pneumonia, heart issues, or severe allergic reactions.",
+            "care": "Sit upright and try to stay calm.",
+            "advice": "**URGENT**: Contact a healthcare provider immediately or seek emergency care."
+        },
+        "nausea": {
+            "causes": "Food poisoning, viral gastroenteritis (stomach flu), or motion sickness.",
+            "care": "Sip clear liquids (electrolytes), eat bland foods (BRAT diet), and avoid strong odors.",
+            "advice": "See a doctor if you can't keep liquids down for 24 hours or see blood in vomit."
+        },
+        "fatigue": {
+            "causes": "Anemia, thyroid issues, sleep apnea, or chronic stress.",
+            "care": "Prioritize sleep hygiene, balanced nutrition, and moderate exercise.",
+            "advice": "Consult a doctor if fatigue is persistent and significantly impacts your daily life."
+        }
     }
     
-    response = triage.get("default")
-    for key in triage:
-        if key in text:
-            response = triage[key]
-            break
+    matches = []
+    emergency_found = False
+    
+    for symptom, details in symptom_db.items():
+        if symptom in text:
+            matches.append(f"### 🔍 Analysis for: {symptom.capitalize()}\n"
+                           f"- **Potential Causes**: {details['causes']}\n"
+                           f"- **Suggested Home Care**: {details['care']}\n"
+                           f"- **Professional Recommendation**: {details['advice']}\n")
+            if "**EMERGENCY**" in details['advice'] or "**URGENT**" in details['advice']:
+                emergency_found = True
+    
+    if not matches:
+        response = "### 📋 General Observation\nYour symptoms were noted. However, they don't match our specific triage profiles. Please monitor your condition closely and consult a healthcare provider if you feel concerned."
+    else:
+        header = "## 🩺 Preliminary Triage Report\n\n"
+        if emergency_found:
+            header += "> [!CAUTION]\n> **HIGH ALERT**: One or more of your symptoms require immediate medical evaluation.\n\n"
+        
+        response = header + "\n".join(matches)
+        response += "\n\n--- \n*Disclaimer: This is an AI-generated observation based on keyword matching. It is NOT a professional diagnosis.*"
             
     return {"analysis": response}
 

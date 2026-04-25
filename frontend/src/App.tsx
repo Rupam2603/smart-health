@@ -386,6 +386,7 @@ export default function App() {
   const fallbackToIp = async () => {
     try {
       const res = await axios.get('https://ipapi.co/json/');
+      if (res.data && res.data.error) throw new Error(res.data.reason || "Rate limited");
       setLocation(res.data);
       fetchHospitals(res.data.latitude, res.data.longitude);
       fetchDoctors(res.data.latitude, res.data.longitude);
@@ -405,9 +406,10 @@ export default function App() {
       );
       out center 15;
     `;
-    const res = await axios.post('https://overpass-api.de/api/interpreter', query, {
-      headers: { 'Content-Type': 'text/plain' }
-    });
+    const res = await axios.post('https://overpass-api.de/api/interpreter',
+      `data=${encodeURIComponent(query)}`,
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
 
     interface OverpassElement {
       lat?: number;
@@ -481,28 +483,49 @@ export default function App() {
       if (apiKey && apiKey !== "your_gemini_api_key_here") {
         // Use advanced Gemini AI model for comprehensive prediction
         const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-        const prompt = `You are an expert AI medical diagnostician. Analyze these patient vitals and provide a health risk prediction.
+        let responseText = "";
         
-        Patient Data:
-        - Age: ${predictionData.age} years
-        - BMI: ${predictionData.bmi} kg/m²
-        - Blood Pressure (Systolic): ${predictionData.blood_pressure} mmHg
-        - Fasting Glucose: ${predictionData.glucose} mg/dL
-        - Insulin: ${predictionData.insulin} µU/ml
+        try {
+          const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+          const prompt = `You are an expert AI medical diagnostician. Analyze these patient vitals and provide a health risk prediction.
+          
+          Patient Data:
+          - Age: ${predictionData.age} years
+          - BMI: ${predictionData.bmi} kg/m²
+          - Blood Pressure (Systolic): ${predictionData.blood_pressure} mmHg
+          - Fasting Glucose: ${predictionData.glucose} mg/dL
+          - Insulin: ${predictionData.insulin} µU/ml
 
-        Format the response strictly as a JSON object with the following keys:
-        - "prediction_code": 0 for healthy/low risk, 1 for moderate risk, 2 for high risk
-        - "prediction": A short 3-5 word summary of the main risk (e.g., "High Risk of Diabetes")
-        - "advice": A detailed 2-3 sentence medical recommendation.
-        - "summary": A concise overview of what these vitals mean together.
-        
-        Do not include markdown blocks like \`\`\`json, just return the raw JSON object.`;
+          Format the response strictly as a JSON object with the following keys:
+          - "prediction_code": 0 for healthy/low risk, 1 for moderate risk, 2 for high risk
+          - "prediction": A short 3-5 word summary of the main risk (e.g., "High Risk of Diabetes")
+          - "advice": A detailed 2-3 sentence medical recommendation.
+          - "summary": A concise overview of what these vitals mean together.
+          
+          Do not include markdown blocks like \`\`\`json, just return the raw JSON object.`;
 
-        const result = await model.generateContent(prompt);
-        const responseText = result.response.text().replace(/```json/gi, '').replace(/```/g, '').trim();
-        const parsedResult = JSON.parse(responseText);
+          const result = await model.generateContent(prompt);
+          responseText = result.response.text();
+        } catch (geminiErr: any) {
+          if (geminiErr.message?.includes("404") || geminiErr.message?.includes("not found")) {
+            console.warn("gemini-1.5-flash not found, trying gemini-pro...");
+            const proModel = genAI.getGenerativeModel({ model: "gemini-pro" });
+            const proResult = await proModel.generateContent(`Analyze these patient vitals and return a JSON object (keys: prediction_code, prediction, advice, summary): Age ${predictionData.age}, BMI ${predictionData.bmi}, BP ${predictionData.blood_pressure}, Glucose ${predictionData.glucose}, Insulin ${predictionData.insulin}.`);
+            const proResponse = await proResult.response;
+            responseText = proResponse.text();
+          } else {
+            throw geminiErr;
+          }
+        }
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+        let parsedResult;
+        try {
+          const jsonText = jsonMatch ? jsonMatch[0] : responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
+          parsedResult = JSON.parse(jsonText);
+        } catch (parseErr) {
+          console.error("JSON Parse Error:", parseErr, "Raw Text:", responseText);
+          throw new Error("Invalid response format from AI.");
+        }
         setPredictionResult(parsedResult);
 
         if (parsedResult.prediction_code === 2) {
@@ -525,16 +548,41 @@ export default function App() {
           addNotification(`Health Check: ${res.data.prediction}`, "info");
         }
       }
-    } catch (err) {
-      console.error("Prediction failed:", err);
-      alert("Failed to run diagnostics. Please check your API connections.");
-      addNotification("Failed to run diagnostics.", "warning");
-    }
+      } catch (err) {
+        console.error("Gemini Prediction failed, attempting fallback:", err);
+        try {
+          // Fallback to traditional backend ML model if Gemini fails
+          const res = await axios.post(`${import.meta.env.VITE_API_URL}/predict`, predictionData);
+          const data = res.data;
+          
+          setPredictionResult({
+            prediction_code: data.prediction_code,
+            prediction: data.prediction,
+            summary: data.summary,
+            advice: data.advice || (data.recommendations ? data.recommendations.join(' ') : "Please consult a professional.")
+          });
+
+          if (data.prediction_code === 2) {
+            addNotification(`High Risk Detected: ${data.prediction}`, "alert");
+          } else if (data.prediction_code === 1) {
+            addNotification(`Moderate Risk: ${data.prediction}`, "warning");
+          } else {
+            addNotification(`Health Check: ${data.prediction}`, "info");
+          }
+        } catch (fallbackErr) {
+          console.error("Fallback Prediction also failed:", fallbackErr);
+          alert("Failed to run diagnostics. Please check your API connections.");
+          addNotification("Failed to run diagnostics.", "warning");
+        }
+      }
     setLoading(false);
   };
 
   const handleSymptomCheck = async () => {
-    if (!symptomText.trim()) return;
+    if (!symptomText.trim()) {
+      alert("Please describe your symptoms before analyzing.");
+      return;
+    }
     setLoading(true);
     try {
       const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
@@ -556,41 +604,96 @@ export default function App() {
 
       // Initialize Gemini Model with real key
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+      let responseText = "";
+      
+      try {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const prompt = `You are a highly advanced AI medical assistant. A user is describing their symptoms: "${symptomText}". 
+        Please provide a structured, professional, and empathetic response. 
+        Do NOT diagnose them. Simply triage the situation.
+        Include:
+        1. Potential common causes.
+        2. Suggested home care or relief (only if completely safe).
+        3. A very clear recommendation on whether they need to see a doctor or seek emergency care immediately.
+        Format the response nicely using markdown bullet points and bold text for readability. Keep it concise.`;
 
-      const prompt = `You are a highly advanced AI medical assistant. A user is describing their symptoms: "${symptomText}". 
-      Please provide a structured, professional, and empathetic response. 
-      Do NOT diagnose them. Simply triage the situation.
-      Include:
-      1. Potential common causes.
-      2. Suggested home care or relief (only if completely safe).
-      3. A very clear recommendation on whether they need to see a doctor or seek emergency care immediately.
-      Format the response nicely using markdown bullet points and bold text for readability. Keep it concise.`;
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        responseText = response.text();
+      } catch (geminiErr: any) {
+        if (geminiErr.message?.includes("404") || geminiErr.message?.includes("not found")) {
+          console.warn("gemini-1.5-flash not found, trying gemini-pro...");
+          const proModel = genAI.getGenerativeModel({ model: "gemini-pro" });
+          const proResult = await proModel.generateContent(`Triage these symptoms: ${symptomText}. Provide causes, care, and recommendation.`);
+          const proResponse = await proResult.response;
+          responseText = proResponse.text();
+        } else {
+          throw geminiErr;
+        }
+      }
 
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      setSymptomResult(response.text());
+      setSymptomResult(responseText);
       addNotification("Symptom analysis completed.", "info");
     } catch (err: unknown) {
-      console.error("Gemini API Error:", err);
-      const errorMessage = err instanceof Error ? err.message : "Unknown error occurred.";
-      setSymptomResult(`**Error communicating with AI:**\n\n${errorMessage}\n\nPlease check that your Gemini API key in the .env file is correct and active.`);
-      addNotification("Error analyzing symptoms.", "warning");
+      console.error("Gemini API Error, attempting fallback:", err);
+      try {
+        const res = await axios.post(`${import.meta.env.VITE_API_URL}/symptoms`, { text: symptomText });
+        setSymptomResult(`**[LOCAL TRIAGE FALLBACK]**\n\n${res.data.analysis}`);
+        addNotification("Symptom analysis completed via local engine.", "info");
+      } catch (fallbackErr) {
+        console.error("Symptom Fallback Error:", fallbackErr);
+        const errorMessage = err instanceof Error ? err.message : "Unknown error occurred.";
+        setSymptomResult(`**Error communicating with AI:**\n\n${errorMessage}\n\nPlease check that your Gemini API key in the .env file is correct and active.`);
+        addNotification("Error analyzing symptoms.", "warning");
+      }
     }
     setLoading(false);
   };
 
-  const triggerSOS = () => {
-    const confirm = window.confirm("🚨 WARNING: Are you sure you want to trigger an Emergency SOS? This will alert nearby ambulance services (108).");
-    if (confirm) {
-      setSosActive(true);
+  const [sosCountdown, setSosCountdown] = useState<number | null>(null);
+  const countdownTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-      addNotification("Emergency SOS triggered. Help is on the way.", "alert");
-      // If user is on a mobile device, automatically attempt to open their dialer to call emergency services
-      if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
-        window.location.href = "tel:108";
-      }
+  const triggerSOS = async () => {
+    // Fetch local emergency number based on detected location
+    let emergencyNumber = "108"; // Default for India
+    try {
+      const res = await axios.get(`${import.meta.env.VITE_API_URL}/emergency-contacts?country=${location?.country_name || 'Global'}`);
+      emergencyNumber = res.data.ambulance;
+    } catch (err) {
+      console.warn("Could not fetch local emergency number, using default 108");
     }
+
+    // Start countdown
+    setSosCountdown(5);
+    
+    if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+    
+    countdownTimerRef.current = setInterval(() => {
+      setSosCountdown(prev => {
+        if (prev === null || prev <= 1) {
+          if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+          activateSOS(emergencyNumber);
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const activateSOS = (number: string) => {
+    setSosActive(true);
+    addNotification(`Emergency SOS triggered. Dialing ${number}...`, "alert");
+    
+    // Attempt to open dialer
+    if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+      window.location.href = `tel:${number}`;
+    }
+  };
+
+  const cancelSOSCountdown = () => {
+    if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+    setSosCountdown(null);
+    addNotification("Emergency SOS sequence cancelled.", "info");
   };
 
   if (!isLoaded) return <SplashScreen />;
@@ -660,6 +763,56 @@ export default function App() {
                 className="w-full bg-slate-900 text-white font-bold text-xl py-5 rounded-2xl hover:bg-slate-800 transition-all active:scale-95"
               >
                 CANCEL EMERGENCY
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {sosCountdown !== null && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/90 backdrop-blur-xl p-6"
+          >
+            <div className="bg-white rounded-[40px] p-8 sm:p-12 max-w-md w-full text-center shadow-2xl border-4 border-rose-500 mx-4">
+              <div className="relative w-32 h-32 mx-auto mb-8">
+                <svg className="w-full h-full transform -rotate-90">
+                  <circle
+                    cx="64"
+                    cy="64"
+                    r="60"
+                    stroke="currentColor"
+                    strokeWidth="8"
+                    fill="transparent"
+                    className="text-slate-100"
+                  />
+                  <motion.circle
+                    cx="64"
+                    cy="64"
+                    r="60"
+                    stroke="currentColor"
+                    strokeWidth="8"
+                    fill="transparent"
+                    strokeDasharray="377"
+                    animate={{ strokeDashoffset: [0, 377] }}
+                    transition={{ duration: 5, ease: "linear" }}
+                    className="text-rose-500"
+                  />
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-5xl font-black text-slate-800">{sosCountdown}</span>
+                </div>
+              </div>
+              <h2 className="text-3xl font-black text-slate-900 mb-2 tracking-tight">SOS INITIATED</h2>
+              <p className="text-slate-500 font-medium mb-8">Dialing emergency services and broadcasting your GPS location in {sosCountdown} seconds...</p>
+              <button
+                onClick={cancelSOSCountdown}
+                className="w-full bg-slate-100 text-slate-800 font-bold py-5 rounded-2xl hover:bg-slate-200 transition-all active:scale-95 border-2 border-slate-200"
+              >
+                CANCEL SEQUENCE
               </button>
             </div>
           </motion.div>
@@ -932,7 +1085,7 @@ export default function App() {
                                   min={field.min}
                                   max={field.max}
                                   value={predictionData[field.key as keyof typeof predictionData]}
-                                  onChange={(e) => setPredictionData({ ...predictionData, [field.key as keyof typeof predictionData]: parseFloat(e.target.value) })}
+                                  onChange={(e) => setPredictionData({ ...predictionData, [field.key as keyof typeof predictionData]: parseFloat(e.target.value) || 0 })}
                                   className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-4 focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all"
                                   required
                                 />

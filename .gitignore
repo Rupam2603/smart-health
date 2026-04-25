@@ -1,0 +1,26 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Production
+dist/
+build/
+
+# Logs
+*.log
+logs/
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
