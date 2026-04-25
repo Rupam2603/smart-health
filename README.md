@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # The Smart Health Assistant 🏥
 
 An AI-driven healthcare support platform that integrates machine learning, real-time APIs, and an intuitive user interface.
@@ -45,3 +46,6 @@ Create a `.env` in the `backend/` folder:
 ```env
 GOOGLE_API_KEY=your_key_here
 ```
+=======
+# smart-health
+>>>>>>> e355d0fda1be681752bce142eade764bb0cdeb19
