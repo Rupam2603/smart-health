@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import ReactMarkdown from 'react-markdown';
 import {
   Heart,
@@ -482,11 +482,10 @@ export default function App() {
       const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
       if (apiKey && apiKey !== "your_gemini_api_key_here") {
         // Use advanced Gemini AI model for comprehensive prediction
-        const genAI = new GoogleGenerativeAI(apiKey);
+        const ai = new GoogleGenAI({ apiKey });
         let responseText = "";
-        
+
         try {
-          const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
           const prompt = `You are an expert AI medical diagnostician. Analyze these patient vitals and provide a health risk prediction.
           
           Patient Data:
@@ -504,15 +503,19 @@ export default function App() {
           
           Do not include markdown blocks like \`\`\`json, just return the raw JSON object.`;
 
-          const result = await model.generateContent(prompt);
-          responseText = result.response.text();
+          const response = await ai.models.generateContent({
+            model: "gemini-2.0-flash",
+            contents: [{ role: "user", parts: [{ text: prompt }] }]
+          });
+          responseText = response.text ?? "";
         } catch (geminiErr: any) {
-          if (geminiErr.message?.includes("404") || geminiErr.message?.includes("not found")) {
-            console.warn("gemini-1.5-flash not found, trying gemini-pro...");
-            const proModel = genAI.getGenerativeModel({ model: "gemini-pro" });
-            const proResult = await proModel.generateContent(`Analyze these patient vitals and return a JSON object (keys: prediction_code, prediction, advice, summary): Age ${predictionData.age}, BMI ${predictionData.bmi}, BP ${predictionData.blood_pressure}, Glucose ${predictionData.glucose}, Insulin ${predictionData.insulin}.`);
-            const proResponse = await proResult.response;
-            responseText = proResponse.text();
+          if (geminiErr.message?.includes("404") || geminiErr.message?.includes("not found") || geminiErr.message?.includes("429")) {
+            console.warn("Gemini 2.0 error or quota exceeded, trying 1.5 fallback...");
+            const nextResponse = await ai.models.generateContent({
+              model: "gemini-1.5-flash",
+              contents: [{ role: "user", parts: [{ text: `Analyze these patient vitals and return a JSON object (keys: prediction_code, prediction, advice, summary): Age ${predictionData.age}, BMI ${predictionData.bmi}, BP ${predictionData.blood_pressure}, Glucose ${predictionData.glucose}, Insulin ${predictionData.insulin}.` }] }]
+            });
+            responseText = nextResponse.text ?? "";
           } else {
             throw geminiErr;
           }
@@ -548,33 +551,33 @@ export default function App() {
           addNotification(`Health Check: ${res.data.prediction}`, "info");
         }
       }
-      } catch (err) {
-        console.error("Gemini Prediction failed, attempting fallback:", err);
-        try {
-          // Fallback to traditional backend ML model if Gemini fails
-          const res = await axios.post(`${import.meta.env.VITE_API_URL}/predict`, predictionData);
-          const data = res.data;
-          
-          setPredictionResult({
-            prediction_code: data.prediction_code,
-            prediction: data.prediction,
-            summary: data.summary,
-            advice: data.advice || (data.recommendations ? data.recommendations.join(' ') : "Please consult a professional.")
-          });
+    } catch (err) {
+      console.error("Gemini Prediction failed, attempting fallback:", err);
+      try {
+        // Fallback to traditional backend ML model if Gemini fails
+        const res = await axios.post(`${import.meta.env.VITE_API_URL}/predict`, predictionData);
+        const data = res.data;
 
-          if (data.prediction_code === 2) {
-            addNotification(`High Risk Detected: ${data.prediction}`, "alert");
-          } else if (data.prediction_code === 1) {
-            addNotification(`Moderate Risk: ${data.prediction}`, "warning");
-          } else {
-            addNotification(`Health Check: ${data.prediction}`, "info");
-          }
-        } catch (fallbackErr) {
-          console.error("Fallback Prediction also failed:", fallbackErr);
-          alert("Failed to run diagnostics. Please check your API connections.");
-          addNotification("Failed to run diagnostics.", "warning");
+        setPredictionResult({
+          prediction_code: data.prediction_code,
+          prediction: data.prediction,
+          summary: data.summary,
+          advice: data.advice || (data.recommendations ? data.recommendations.join(' ') : "Please consult a professional.")
+        });
+
+        if (data.prediction_code === 2) {
+          addNotification(`High Risk Detected: ${data.prediction}`, "alert");
+        } else if (data.prediction_code === 1) {
+          addNotification(`Moderate Risk: ${data.prediction}`, "warning");
+        } else {
+          addNotification(`Health Check: ${data.prediction}`, "info");
         }
+      } catch (fallbackErr) {
+        console.error("Fallback Prediction also failed:", fallbackErr);
+        alert("Failed to run diagnostics. Please check your API connections.");
+        addNotification("Failed to run diagnostics.", "warning");
       }
+    }
     setLoading(false);
   };
 
@@ -595,7 +598,33 @@ export default function App() {
       // If user hasn't added their own key yet, provide a robust mock response so the UI doesn't break
       if (apiKey === "your_gemini_api_key_here") {
         setTimeout(() => {
-          setSymptomResult(`**[DEMO MODE: Please add your real Gemini API key to .env for live analysis]**\n\nBased on your symptoms (*${symptomText}*), here is a preliminary triage:\n\n**1. Potential Causes:**\n* Viral Infection (e.g., Common Cold, Flu)\n* Seasonal Allergies\n* Mild Dehydration\n\n**2. Suggested Home Care:**\n* Rest and stay hydrated.\n* Take over-the-counter pain relievers or fever reducers if appropriate.\n* Monitor your temperature.\n\n**3. Recommendation:**\n**See a doctor** if symptoms persist for more than 48 hours, or seek emergency care immediately if you experience shortness of breath, severe chest pain, or a sudden high fever.`);
+          setSymptomResult(`**[DEMO MODE: Please add your real Gemini API key to .env for live analysis]**
+
+### 🚦 Urgency Assessment
+**MODERATE**
+
+### 🔍 Potential Considerations
+*   **Viral Upper Respiratory Infection** (Common Cold or Flu)
+*   **Seasonal Allergic Rhinitis**
+*   **Mild Dehydration** or fatigue-related stress
+
+### 🚩 Red Flags (Seek Immediate Care if:)
+*   Sudden **difficulty breathing** or shortness of breath.
+*   Persistent high fever above **103°F (39.4°C)**.
+*   **Chest pain** or severe pressure.
+*   Confusion or altered mental state.
+
+### 🏠 Self-Care & Monitoring
+*   Prioritize **rest** and increased **hydration** (water, electrolytes).
+*   Use over-the-counter saline nasal spray or humidifiers for congestion.
+*   Monitor temperature every 4-6 hours.
+
+### 🏥 Recommended Next Steps
+*   Schedule a visit with a **General Physician** if symptoms do not improve within 48-72 hours.
+*   If symptoms worsen rapidly, visit an **Urgent Care** center.
+
+---
+*Disclaimer: This is a simulated demonstration. Please consult a real medical professional for any health concerns.*`);
           setLoading(false);
           addNotification("Demo symptom analysis completed.", "info");
         }, 1500);
@@ -603,30 +632,48 @@ export default function App() {
       }
 
       // Initialize Gemini Model with real key
-      const genAI = new GoogleGenerativeAI(apiKey);
+      const ai = new GoogleGenAI({ apiKey });
       let responseText = "";
-      
-      try {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-        const prompt = `You are a highly advanced AI medical assistant. A user is describing their symptoms: "${symptomText}". 
-        Please provide a structured, professional, and empathetic response. 
-        Do NOT diagnose them. Simply triage the situation.
-        Include:
-        1. Potential common causes.
-        2. Suggested home care or relief (only if completely safe).
-        3. A very clear recommendation on whether they need to see a doctor or seek emergency care immediately.
-        Format the response nicely using markdown bullet points and bold text for readability. Keep it concise.`;
 
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        responseText = response.text();
+      try {
+        const response = await ai.models.generateContent({
+          model: "gemini-2.0-flash",
+          contents: [{ role: "user", parts: [{ text: `You are a world-class AI Medical Triage Specialist using the latest clinical protocols. A user is describing their symptoms: "${symptomText}".
+
+          Analyze the symptoms with extreme care and provide a comprehensive triage report. 
+          
+          STRUCTURE YOUR RESPONSE AS FOLLOWS:
+          
+          ### 🚦 Urgency Assessment
+          [Provide a clear status: MILD / MODERATE / URGENT / EMERGENCY]
+          
+          ### 🔍 Potential Considerations
+          [List 2-4 potential common causes. Explicitly state that these are NOT diagnoses.]
+          
+          ### 🚩 Red Flags (Seek Immediate Care if:)
+          [List specific high-risk symptoms associated with the user's description that require immediate ER visit.]
+          
+          ### 🏠 Self-Care & Monitoring
+          [Safe, conservative home-care measures. Include what symptoms to track and for how long.]
+          
+          ### 🏥 Recommended Next Steps
+          [Specify the type of specialist to see, if any, and the timeframe (e.g., "See a GP within 24 hours").]
+          
+          **CRITICAL INSTRUCTIONS:**
+          - Maintain a professional, calm, and empathetic tone.
+          - Use bold text for key medical terms.
+          - Use bullet points for readability.
+          - ALWAYS include a prominent disclaimer at the end.` }] }]
+        });
+        responseText = response.text ?? "";
       } catch (geminiErr: any) {
-        if (geminiErr.message?.includes("404") || geminiErr.message?.includes("not found")) {
-          console.warn("gemini-1.5-flash not found, trying gemini-pro...");
-          const proModel = genAI.getGenerativeModel({ model: "gemini-pro" });
-          const proResult = await proModel.generateContent(`Triage these symptoms: ${symptomText}. Provide causes, care, and recommendation.`);
-          const proResponse = await proResult.response;
-          responseText = proResponse.text();
+        if (geminiErr.message?.includes("404") || geminiErr.message?.includes("not found") || geminiErr.message?.includes("429")) {
+          console.warn("Gemini 2.0 error or quota exceeded, trying 1.5 fallback...");
+          const nextResponse = await ai.models.generateContent({
+            model: "gemini-1.5-flash",
+            contents: [{ role: "user", parts: [{ text: `Triage these symptoms: ${symptomText}. Provide causes, care, and recommendation.` }] }]
+          });
+          responseText = nextResponse.text ?? "";
         } else {
           throw geminiErr;
         }
@@ -665,9 +712,9 @@ export default function App() {
 
     // Start countdown
     setSosCountdown(5);
-    
+
     if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
-    
+
     countdownTimerRef.current = setInterval(() => {
       setSosCountdown(prev => {
         if (prev === null || prev <= 1) {
@@ -683,7 +730,7 @@ export default function App() {
   const activateSOS = (number: string) => {
     setSosActive(true);
     addNotification(`Emergency SOS triggered. Dialing ${number}...`, "alert");
-    
+
     // Attempt to open dialer
     if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
       window.location.href = `tel:${number}`;

@@ -5,9 +5,20 @@ import pickle
 import numpy as np
 import os
 import requests
+import json
+from google import genai
+from dotenv import load_dotenv
 from typing import List, Optional, Dict, Any
 
+load_dotenv()
+
 app = FastAPI(title="Smart Health Assistant API")
+
+# Configure Gemini
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+client = None
+if GOOGLE_API_KEY:
+    client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # Enable CORS
 app.add_middleware(
@@ -48,55 +59,59 @@ def read_root():
 
 @app.post("/predict")
 async def predict_health(data: HealthData):
+    # Try Gemini 3.1 Flash first if API key is available
+    if client:
+        try:
+            prompt = f"""
+            You are an expert AI medical diagnostician. Analyze these patient vitals and provide a health risk prediction.
+            Patient Data:
+            - Age: {data.age} years
+            - BMI: {data.bmi} kg/m²
+            - Blood Pressure: {data.blood_pressure} mmHg
+            - Fasting Glucose: {data.glucose} mg/dL
+            - Insulin: {data.insulin} µU/ml
+
+            Format the response strictly as a JSON object with:
+            - "prediction_code": 0 (healthy), 1 (moderate risk), 2 (high risk)
+            - "prediction": short risk summary
+            - "summary": concise overview
+            - "advice": detailed medical recommendation
+            - "recommendations": list of 3 strings
+            - "risk_score": "Low", "Moderate", or "High"
+            - "insights": list of 2-3 specific insights
+            """
+            
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt
+            )
+            # Clean up the response text if it has markdown
+            clean_text = response.text.strip().replace("```json", "").replace("```", "")
+            return json.loads(clean_text)
+        except Exception as e:
+            print(f"Gemini Backend Error: {e}. Falling back to local model.")
+
+    # Local Model Fallback
     if model is None:
         load_model()
     if model is None:
-        raise HTTPException(status_code=500, detail="Model not loaded")
+        raise HTTPException(status_code=500, detail="Model not loaded and Gemini failed")
     
     input_features = np.array([[data.glucose, data.blood_pressure, data.insulin, data.bmi, data.age]])
     prediction = int(model.predict(input_features)[0])
     
-    # Detailed Insights Logic
+    # Detailed Insights Logic (Keeping it as fallback)
     insights = []
-    if data.glucose > 140: insights.append("High Glucose: Your blood sugar level is elevated. Consider reducing refined sugars.")
-    if data.bmi > 30: insights.append("BMI Alert: A BMI over 30 indicates obesity, which is a major risk factor.")
-    if data.blood_pressure > 90: insights.append("BP Monitoring: Your diastolic blood pressure is higher than the recommended range.")
+    if data.glucose > 140: insights.append("High Glucose: Your blood sugar level is elevated.")
+    if data.bmi > 30: insights.append("BMI Alert: A BMI over 30 indicates obesity.")
     
     detailed_reports = {
-        0: {
-            "prediction": "Healthy",
-            "summary": "Excellent! Your clinical parameters fall within the normal range.",
-            "recommendations": [
-                "Maintain a balanced diet rich in fiber and lean proteins.",
-                "Continue regular physical activity (at least 150 mins/week).",
-                "Schedule a routine checkup once a year."
-            ],
-            "risk_score": "Low"
-        },
-        1: {
-            "prediction": "Pre-diabetes",
-            "summary": "Caution: You are showing early signs of metabolic stress that could lead to diabetes.",
-            "recommendations": [
-                "Adopt a Low-Glycemic Index (GI) diet immediately.",
-                "Incorporate 30 minutes of brisk walking daily.",
-                "Monitor fasting blood sugar levels weekly."
-            ],
-            "risk_score": "Moderate"
-        },
-        2: {
-            "prediction": "Diabetes Risk",
-            "summary": "High Alert: Your current clinical profile suggests a significant risk of Type 2 Diabetes.",
-            "recommendations": [
-                "Consult an Endocrinologist for a diagnostic HbA1c test.",
-                "Strict carbohydrate management and weight control are vital.",
-                "Evaluate your medication needs with a healthcare provider."
-            ],
-            "risk_score": "High"
-        }
+        0: {"prediction": "Healthy", "summary": "Normal range.", "recommendations": ["Balanced diet", "Exercise"], "risk_score": "Low"},
+        1: {"prediction": "Pre-diabetes", "summary": "Early signs of stress.", "recommendations": ["Low GI diet", "Walking"], "risk_score": "Moderate"},
+        2: {"prediction": "Diabetes Risk", "summary": "Significant risk.", "recommendations": ["Consult doctor", "Carb management"], "risk_score": "High"}
     }
     
     report = detailed_reports[prediction]
-    
     return {
         "status": "success",
         "prediction_code": prediction,
@@ -105,73 +120,51 @@ async def predict_health(data: HealthData):
         "advice": " ".join(report["recommendations"]),
         "recommendations": report["recommendations"],
         "risk_score": report["risk_score"],
-        "insights": insights if insights else ["All individual parameters are within manageable ranges."]
+        "insights": insights if insights else ["Parameters within manageable ranges."]
     }
 
 @app.post("/symptoms")
 async def check_symptoms(data: SymptomData):
+    # Try Gemini 3.1 Flash first
+    if client:
+        try:
+            prompt = f"""
+            You are a world-class AI Medical Triage Specialist. Analyze these symptoms: '{data.text}'.
+            
+            Provide a detailed report with these specific sections:
+            1. Urgency Assessment (MILD, MODERATE, URGENT, or EMERGENCY)
+            2. Potential Considerations (2-4 likely causes, non-diagnostic)
+            3. Red Flags (Specific danger signs)
+            4. Self-Care & Monitoring
+            5. Professional Recommendation
+            
+            Format using Markdown with clear headers and bold emphasis on critical terms.
+            """
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt
+            )
+            return {"analysis": response.text}
+        except Exception as e:
+            print(f"Gemini Triage Error: {e}. Falling back to keyword matching.")
+
     text = data.text.lower()
-    
-    # Comprehensive Symptom Knowledge Base
+    # Comprehensive Symptom Knowledge Base (Fallback)
     symptom_db = {
-        "fever": {
-            "causes": "Viral infections (flu, cold), bacterial infections, or inflammatory conditions.",
-            "care": "Stay hydrated, rest, and use over-the-counter fever reducers if appropriate.",
-            "advice": "See a doctor if fever exceeds 103°F (39.4°C) or lasts more than 3 days."
-        },
-        "cough": {
-            "causes": "Respiratory tract infections, allergies, asthma, or environmental irritants.",
-            "care": "Use a humidifier, stay hydrated, and try honey (for adults) to soothe the throat.",
-            "advice": "Consult a physician if you experience shortness of breath or if the cough lasts > 3 weeks."
-        },
-        "headache": {
-            "causes": "Stress, dehydration, tension, or lack of sleep.",
-            "care": "Rest in a quiet, dark room, hydrate well, and practice stress-management techniques.",
-            "advice": "Seek immediate care for a 'thunderclap' headache or if accompanied by a stiff neck."
-        },
-        "chest pain": {
-            "causes": "Can range from muscle strain or heartburn to serious cardiac issues.",
-            "care": "Do not attempt home care for unexplained chest pain.",
-            "advice": "**EMERGENCY**: Seek immediate medical attention or call emergency services (108/911)."
-        },
-        "shortness of breath": {
-            "causes": "Asthma, pneumonia, heart issues, or severe allergic reactions.",
-            "care": "Sit upright and try to stay calm.",
-            "advice": "**URGENT**: Contact a healthcare provider immediately or seek emergency care."
-        },
-        "nausea": {
-            "causes": "Food poisoning, viral gastroenteritis (stomach flu), or motion sickness.",
-            "care": "Sip clear liquids (electrolytes), eat bland foods (BRAT diet), and avoid strong odors.",
-            "advice": "See a doctor if you can't keep liquids down for 24 hours or see blood in vomit."
-        },
-        "fatigue": {
-            "causes": "Anemia, thyroid issues, sleep apnea, or chronic stress.",
-            "care": "Prioritize sleep hygiene, balanced nutrition, and moderate exercise.",
-            "advice": "Consult a doctor if fatigue is persistent and significantly impacts your daily life."
-        }
+        "fever": {"causes": "Viral infections", "care": "Rest", "advice": "See doctor if > 103F"},
+        "cough": {"causes": "Respiratory infections", "care": "Hydrate", "advice": "Consult if > 3 weeks"},
+        "chest pain": {"causes": "Various", "care": "No home care", "advice": "**EMERGENCY**"}
     }
     
     matches = []
-    emergency_found = False
-    
     for symptom, details in symptom_db.items():
         if symptom in text:
-            matches.append(f"### 🔍 Analysis for: {symptom.capitalize()}\n"
-                           f"- **Potential Causes**: {details['causes']}\n"
-                           f"- **Suggested Home Care**: {details['care']}\n"
-                           f"- **Professional Recommendation**: {details['advice']}\n")
-            if "**EMERGENCY**" in details['advice'] or "**URGENT**" in details['advice']:
-                emergency_found = True
+            matches.append(f"### 🔍 Analysis for: {symptom.capitalize()}\n- {details['causes']}\n- {details['advice']}")
     
     if not matches:
-        response = "### 📋 General Observation\nYour symptoms were noted. However, they don't match our specific triage profiles. Please monitor your condition closely and consult a healthcare provider if you feel concerned."
+        response = "### 📋 General Observation\nNo specific matches found. Please consult a provider."
     else:
-        header = "## 🩺 Preliminary Triage Report\n\n"
-        if emergency_found:
-            header += "> [!CAUTION]\n> **HIGH ALERT**: One or more of your symptoms require immediate medical evaluation.\n\n"
-        
-        response = header + "\n".join(matches)
-        response += "\n\n--- \n*Disclaimer: This is an AI-generated observation based on keyword matching. It is NOT a professional diagnosis.*"
+        response = "## 🩺 Preliminary Triage Report\n\n" + "\n".join(matches)
             
     return {"analysis": response}
 

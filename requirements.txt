@@ -7,4 +7,3 @@ numpy
 requests
 python-multipart
 python-dotenv
-google-genai
